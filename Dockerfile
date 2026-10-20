@@ -9,7 +9,7 @@ COPY --from=aws-cli /usr/local/aws-cli /usr/local/aws-cli
 COPY --from=busybox /bin/busybox /usr/local/bin/busybox
 COPY --chmod=0755 scripts/ /opt/db-backup/
 
-FROM mysql:8.4 AS mysql
+FROM mysql:9.7 AS mysql
 
 USER root
 

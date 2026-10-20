@@ -5,7 +5,7 @@ set -Eeuo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="${1:-}"
 case "$ENGINE" in
-  mysql) DB_IMAGE="${DB_IMAGE:-mysql:8.4}"; EXTENSION=sql.gz ;;
+  mysql) DB_IMAGE="${DB_IMAGE:-mysql:9.7}"; EXTENSION=sql.gz ;;
   postgres) DB_IMAGE="${DB_IMAGE:-postgres:18}"; EXTENSION=dump ;;
   *)
     printf 'usage: %s mysql|postgres\n' "$0" >&2
