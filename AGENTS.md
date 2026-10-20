@@ -6,7 +6,7 @@
 
 - 项目运行在 Ubuntu 的 Docker Compose 环境，镜像支持 `linux/amd64` 和 `linux/arm64`。
 - 支持 MySQL 和 PostgreSQL。`Dockerfile` 的 `mysql` target 基于 `mysql:8.4`，`postgres` target 基于 `postgres:18`，数据库类型由镜像内的 `DB_ENGINE` 决定。
-- `scripts/backup.sh` 负责公共流程，`scripts/engines/<engine>.sh` 实现列库、导出和完整性校验。连接配置统一使用 `DB_*` 变量。
+- `scripts/backup.sh` 负责公共流程，`scripts/engines/<engine>.sh` 实现列库、导出和完整性校验。连接配置统一使用 `DB_*` 变量。新增数据库类型时实现 `engine_require_commands`、`engine_configure`、`engine_is_system_database`、`engine_list_databases`、`engine_dump`（可选 `engine_dump_globals`），并在 `Dockerfile` 增加同名 target。
 - MySQL 使用 `mysqldump` 生成 `.sql.gz`；PostgreSQL 使用 `pg_dump` custom 格式生成 `.dump`，并用 `pg_dumpall --globals-only --no-role-passwords` 导出角色到 `_globals`。
 - BusyBox `crond` 根据 `BACKUP_CRON` 运行备份任务。脚本安装在镜像的 `/opt/db-backup`。
 - 备份在容器临时目录生成，完成完整性校验和 S3 上传校验后清理。
