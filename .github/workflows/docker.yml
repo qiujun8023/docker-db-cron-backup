@@ -14,6 +14,9 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE: ghcr.io/qiujun8023/db-cron-backup
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -22,21 +25,29 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Check shell scripts
-        run: shellcheck scripts/*.sh tests/*.sh
+        run: shellcheck -x scripts/*.sh scripts/engines/*.sh tests/*.sh
       - name: Run tests
         run: bash tests/run.sh
 
   integration:
     needs: test
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [mysql, postgres]
     steps:
       - uses: actions/checkout@v7
       - name: Run integration tests
-        run: bash tests/integration.sh
+        run: bash tests/integration.sh ${{ matrix.engine }}
 
   build:
     needs: integration
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [mysql, postgres]
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
@@ -48,12 +59,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve short commit
+        id: commit
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - name: Build and publish
         uses: docker/build-push-action@v7
         with:
           context: .
+          target: ${{ matrix.engine }}
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/qiujun8023/mysql-cron-backup:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.IMAGE }}:${{ matrix.engine }}
+            ${{ env.IMAGE }}:${{ matrix.engine }}-${{ steps.commit.outputs.short }}
+          cache-from: type=gha,scope=${{ matrix.engine }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.engine }}

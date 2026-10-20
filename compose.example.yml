@@ -1,15 +1,16 @@
 services:
-  mysql-backup:
-    image: ghcr.io/qiujun8023/mysql-cron-backup:latest
+  db-backup:
+    # PostgreSQL 使用 ghcr.io/qiujun8023/db-cron-backup:postgres，端口改为 5432
+    image: ghcr.io/qiujun8023/db-cron-backup:mysql
     restart: unless-stopped
     environment:
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=backup
-      - MYSQL_PASSWORD=<MySQL 备份账号密码>
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=backup
+      - DB_PASSWORD=<数据库备份账号密码>
       - S3_ENDPOINT=https://s3.example.com
       - S3_REGION=us-east-1
-      - S3_BUCKET=mysql-backups
+      - S3_BUCKET=db-backups
       - S3_PREFIX=db-01
       - AWS_ACCESS_KEY_ID=<S3 Access Key>
       - AWS_SECRET_ACCESS_KEY=<S3 Secret Key>

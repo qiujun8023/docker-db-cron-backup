@@ -19,7 +19,8 @@ valid_cron() {
 }
 
 BACKUP_CRON="${BACKUP_CRON:-0 3 * * *}"
-STATE_DIR="${STATE_DIR:-/var/lib/mysql-backup}"
+BACKUP_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backup.sh"
+STATE_DIR="${STATE_DIR:-/var/lib/db-backup}"
 CRON_DIR="${CRON_DIR:-/var/spool/cron/crontabs}"
 CROND_BIN="${CROND_BIN:-crond}"
 crond_pid=""
@@ -41,7 +42,7 @@ fi
 mkdir -p "$STATE_DIR" "$CRON_DIR"
 date +%s > "$STATE_DIR/started-at"
 
-printf '%s /usr/local/bin/backup.sh >/proc/1/fd/1 2>/proc/1/fd/2\n' "$BACKUP_CRON" > "$CRON_DIR/root"
+printf '%s %s >/proc/1/fd/1 2>/proc/1/fd/2\n' "$BACKUP_CRON" "$BACKUP_SCRIPT" > "$CRON_DIR/root"
 chmod 0600 "$CRON_DIR/root"
 
 log "Starting crond; schedule=\"$BACKUP_CRON\" TZ=${TZ:-UTC}"

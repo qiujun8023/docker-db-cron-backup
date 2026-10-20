@@ -5,6 +5,9 @@ set -Eeuo pipefail
 export LC_ALL=C
 umask 077
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GLOBALS_NAME=_globals
+
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S%z')" "$*"
 }
@@ -43,15 +46,8 @@ trim() {
   printf '%s' "$value"
 }
 
-is_system_database() {
-  case "$1" in
-    information_schema|mysql|performance_schema|sys) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 validate_database_name() {
-  [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_.\$-]*$ ]]
+  [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_.\$-]*$ && "$1" != "$GLOBALS_NAME" ]]
 }
 
 local_file_size() {
@@ -60,98 +56,80 @@ local_file_size() {
 
 collect_databases() {
   local destination="$1"
-  local query
 
-  if [[ -n "${MYSQL_DATABASES:-}" ]]; then
-    printf '%s\n' "$MYSQL_DATABASES" | tr ',' '\n' > "$destination"
+  if [[ -n "${DB_DATABASES:-}" ]]; then
+    printf '%s\n' "$DB_DATABASES" | tr ',' '\n' > "$destination"
     return
   fi
 
-  query="SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys') ORDER BY SCHEMA_NAME"
-  if ! "$MYSQL_BIN" "${MYSQL_ARGS[@]}" --execute="$query" > "$destination"; then
-    fail "could not list MySQL databases"
+  if ! engine_list_databases > "$destination"; then
+    fail "could not list $DB_ENGINE databases"
     return 1
   fi
 }
 
-backup_database() {
-  local database="$1"
-  local timestamp="$2"
-  local basename="${database}.${timestamp}.sql.gz"
-  local dump_file="${WORK_DIR}/${basename}"
-  local key="${S3_KEY_PREFIX}${basename}"
+# Runs the producer to write a verified local file, then uploads it and
+# compares the stored object size with the local file.
+backup_object() {
+  local label="$1"
+  local key="$2"
+  shift 2
+  local output="${WORK_DIR}/${key//\//_}"
   local remote_size
   local local_size
 
-  log "Dumping database $database"
-  if ! "$MYSQLDUMP_BIN" \
-      "${MYSQL_CONNECTION_ARGS[@]}" \
-      --single-transaction \
-      --quick \
-      --routines \
-      --events \
-      --triggers \
-      --hex-blob \
-      --no-tablespaces \
-      --set-gtid-purged=OFF \
-      --databases "$database" \
-      | gzip "-$GZIP_LEVEL" -n > "$dump_file"; then
-    rm -f -- "$dump_file"
-    fail "mysqldump failed for $database"
-    return 1
-  fi
-
-  if ! gzip -t "$dump_file"; then
-    rm -f -- "$dump_file"
-    fail "gzip verification failed for $database"
+  log "Dumping $label"
+  if ! "$@" "$output"; then
+    rm -f -- "$output"
+    fail "dump failed for $label"
     return 1
   fi
 
   log "Uploading s3://${S3_BUCKET}/${key}"
   if ! "$AWS_BIN" "${AWS_ARGS[@]}" s3 cp \
-      "$dump_file" "s3://${S3_BUCKET}/${key}" \
+      "$output" "s3://${S3_BUCKET}/${key}" \
       --only-show-errors; then
-    rm -f -- "$dump_file"
-    fail "S3 upload failed for $database"
+    rm -f -- "$output"
+    fail "S3 upload failed for $label"
     return 1
   fi
 
-  local_size="$(local_file_size "$dump_file")"
-  rm -f -- "$dump_file"
+  local_size="$(local_file_size "$output")"
+  rm -f -- "$output"
 
   if ! remote_size="$("$AWS_BIN" "${AWS_ARGS[@]}" s3api head-object \
       --bucket "$S3_BUCKET" \
       --key "$key" \
       --query ContentLength \
       --output text)"; then
-    fail "could not verify uploaded object for $database"
+    fail "could not verify uploaded object for $label"
     return 1
   fi
   remote_size="$(trim "$remote_size")"
 
   if [[ "$local_size" != "$remote_size" ]]; then
-    fail "uploaded size mismatch for $database: local=$local_size remote=$remote_size"
+    fail "uploaded size mismatch for $label: local=$local_size remote=$remote_size"
     return 1
   fi
 
-  log "Completed database $database"
+  log "Completed $label"
 }
 
-MYSQL_HOST="${MYSQL_HOST:-mysql}"
-MYSQL_PORT="${MYSQL_PORT:-3306}"
-MYSQL_USER="${MYSQL_USER:-}"
-MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
-MYSQL_SSL_MODE="${MYSQL_SSL_MODE:-PREFERRED}"
+DB_ENGINE="${DB_ENGINE:-}"
+DB_HOST="${DB_HOST:-}"
+DB_PORT="${DB_PORT:-}"
+DB_USER="${DB_USER:-}"
+DB_PASSWORD="${DB_PASSWORD:-}"
+DB_SSL_MODE="${DB_SSL_MODE:-preferred}"
 S3_ENDPOINT="${S3_ENDPOINT:-}"
 S3_REGION="${S3_REGION:-us-east-1}"
 S3_BUCKET="${S3_BUCKET:-}"
 S3_PREFIX="${S3_PREFIX:-}"
 AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
 AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
-GZIP_LEVEL="${GZIP_LEVEL:-6}"
-STATE_DIR="${STATE_DIR:-/var/lib/mysql-backup}"
-MYSQL_BIN="${MYSQL_BIN:-mysql}"
-MYSQLDUMP_BIN="${MYSQLDUMP_BIN:-mysqldump}"
+COMPRESSION_LEVEL="${COMPRESSION_LEVEL:-6}"
+STATE_DIR="${STATE_DIR:-/var/lib/db-backup}"
+ENGINE_DIR="${ENGINE_DIR:-$SCRIPT_DIR/engines}"
 AWS_BIN="${AWS_BIN:-aws}"
 
 mkdir -p "$STATE_DIR"
@@ -170,8 +148,20 @@ on_exit() {
 }
 trap on_exit EXIT
 
-require_value MYSQL_USER
-require_value MYSQL_PASSWORD
+case "$DB_ENGINE" in
+  mysql|postgres) ;;
+  *)
+    fail "DB_ENGINE must be mysql or postgres"
+    exit 1
+    ;;
+esac
+# shellcheck source-path=SCRIPTDIR source=engines/mysql.sh
+source "$ENGINE_DIR/$DB_ENGINE.sh"
+DB_PORT="${DB_PORT:-$ENGINE_DEFAULT_PORT}"
+
+require_value DB_HOST
+require_value DB_USER
+require_value DB_PASSWORD
 require_value S3_BUCKET
 require_value AWS_ACCESS_KEY_ID
 require_value AWS_SECRET_ACCESS_KEY
@@ -184,24 +174,23 @@ if [[ -n "$S3_PREFIX" && ! "$S3_PREFIX" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ 
 fi
 S3_KEY_PREFIX="${S3_PREFIX:+${S3_PREFIX}/}"
 
-if [[ ! "$MYSQL_PORT" =~ ^[0-9]+$ ]]; then
-  fail "MYSQL_PORT must be numeric"
+if [[ ! "$DB_PORT" =~ ^[0-9]+$ ]]; then
+  fail "DB_PORT must be numeric"
   exit 1
 fi
-if [[ ! "$GZIP_LEVEL" =~ ^[1-9]$ ]]; then
-  fail "GZIP_LEVEL must be between 1 and 9"
+if [[ ! "$COMPRESSION_LEVEL" =~ ^[1-9]$ ]]; then
+  fail "COMPRESSION_LEVEL must be between 1 and 9"
   exit 1
 fi
-case "$MYSQL_SSL_MODE" in
-  DISABLED|PREFERRED|REQUIRED|VERIFY_CA|VERIFY_IDENTITY) ;;
+case "$DB_SSL_MODE" in
+  disabled|preferred|required|verify-ca|verify-full) ;;
   *)
-    fail "MYSQL_SSL_MODE must be DISABLED, PREFERRED, REQUIRED, VERIFY_CA or VERIFY_IDENTITY"
+    fail "DB_SSL_MODE must be disabled, preferred, required, verify-ca or verify-full"
     exit 1
     ;;
 esac
 
-require_command "$MYSQL_BIN"
-require_command "$MYSQLDUMP_BIN"
+engine_require_commands
 require_command "$AWS_BIN"
 require_command gzip
 
@@ -215,9 +204,8 @@ if [[ "${BACKUP_LOCK_DISABLED:-false}" != "true" ]]; then
 fi
 write_epoch "$STATE_DIR/last-attempt"
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mysql-backup.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/db-backup.XXXXXX")"
 
-export MYSQL_PWD="$MYSQL_PASSWORD"
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 export AWS_DEFAULT_REGION="$S3_REGION"
 
@@ -234,18 +222,12 @@ if [[ -z "${AWS_CONFIG_FILE:-}" ]]; then
   export AWS_CONFIG_FILE
 fi
 
-MYSQL_CONNECTION_ARGS=(
-  --host="$MYSQL_HOST"
-  --port="$MYSQL_PORT"
-  --user="$MYSQL_USER"
-  --protocol=TCP
-  --ssl-mode="$MYSQL_SSL_MODE"
-)
-MYSQL_ARGS=("${MYSQL_CONNECTION_ARGS[@]}" --batch --skip-column-names)
 AWS_ARGS=(--region "$S3_REGION")
 if [[ -n "$S3_ENDPOINT" ]]; then
   AWS_ARGS+=(--endpoint-url "$S3_ENDPOINT")
 fi
+
+engine_configure
 
 TIMESTAMP="${BACKUP_TIMESTAMP:-$(date +%Y%m%d%H%M%S)}"
 if [[ ! "$TIMESTAMP" =~ ^[0-9]{14}$ ]]; then
@@ -261,7 +243,7 @@ DATABASES=()
 while IFS= read -r database || [[ -n "$database" ]]; do
   database="$(trim "${database%$'\r'}")"
   [[ -z "$database" ]] && continue
-  is_system_database "$database" && continue
+  engine_is_system_database "$database" && continue
   if ! validate_database_name "$database"; then
     log "ERROR: skipping unsupported database name: $database" >&2
     failures=$((failures + 1))
@@ -270,22 +252,31 @@ while IFS= read -r database || [[ -n "$database" ]]; do
   DATABASES+=("$database")
 done < "$DATABASE_LIST"
 
-if (( ${#DATABASES[@]} == 0 )); then
+if (( ${#DATABASES[@]} == 0 && failures == 0 )); then
   write_epoch "$STATE_DIR/last-success"
   rm -f "$STATE_DIR/last-failure"
   log "No user databases found; nothing to back up"
   exit 0
 fi
 
-log "Starting backup; databases=${#DATABASES[@]}"
+log "Starting $DB_ENGINE backup; databases=${#DATABASES[@]}"
+if declare -F engine_dump_globals >/dev/null; then
+  if ! backup_object "cluster globals" \
+      "${S3_KEY_PREFIX}${GLOBALS_NAME}/${TIMESTAMP}.sql.gz" \
+      engine_dump_globals; then
+    failures=$((failures + 1))
+  fi
+fi
 for database in "${DATABASES[@]}"; do
-  if ! backup_database "$database" "$TIMESTAMP"; then
+  if ! backup_object "database $database" \
+      "${S3_KEY_PREFIX}${database}/${TIMESTAMP}.${ENGINE_EXTENSION}" \
+      engine_dump "$database"; then
     failures=$((failures + 1))
   fi
 done
 
 if (( failures > 0 )); then
-  fail "$failures database backup(s) failed"
+  fail "$failures backup item(s) failed"
   exit 1
 fi
 
