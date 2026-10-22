@@ -26,7 +26,7 @@ bash -n scripts/*.sh scripts/engines/*.sh tests/*.sh
 bash tests/run.sh
 bash tests/integration.sh mysql
 bash tests/integration.sh postgres
-actionlint .github/workflows/docker.yml
+actionlint .github/workflows/ci.yml .github/workflows/docker-publish.yml
 ```
 
 集成测试使用真实的 MySQL 9.7 和 PostgreSQL 18 验证导出、恢复、cron 调度和健康检查，S3 命令由测试脚本模拟。Dockerfile、基础镜像或构建流程变化后，需要完成两个引擎的集成测试和双架构构建。
