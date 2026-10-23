@@ -20,8 +20,10 @@ env:
 
 jobs:
   build:
-    # CI 通过的 push 才发布；手动触发直接发布
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    # CI 通过的 push 才发布；手动触发只允许默认分支
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
